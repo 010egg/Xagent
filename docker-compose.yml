@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  claude-webui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: claude-webui
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      # Claude API 配置（如果需要）
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+
+      # MCP 服务器配置
+      - MCP_BERSERKER_URL=${MCP_BERSERKER_URL:-http://cm-mng.bilibili.co/ad-data-public-mcp/mcp/berserker-metadata}
+
+      # 工作目录
+      - WORK_DIR=${WORK_DIR:-/app}
+
+      # 日志级别
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+
+    volumes:
+      # 挂载工作目录（可选）
+      - ${HOST_WORK_DIR:-./workspace}:/workspace
+
+      # 挂载日志目录（可选）
+      - ${HOST_LOG_DIR:-./logs}:/logs
+
+    restart: unless-stopped
+
+    networks:
+      - claude-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  claude-network:
+    driver: bridge
