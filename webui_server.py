@@ -5,11 +5,18 @@ FastAPI + WebSocket 实现的实时聊天服务器
 
 import asyncio
 import json
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import logging
+import yaml
+from typing import Dict, List, Optional
+from dotenv import load_dotenv
+
+# 加载环境变量
+load_dotenv()
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
@@ -38,6 +45,7 @@ class ConversationManager:
         self.client = None
         self.is_interrupted = False
         self.current_task = None
+        self.custom_commands: Dict[str, Dict] = {}
 
         # 配置 MCP 服务器
         mcp_servers = {
@@ -71,6 +79,9 @@ class ConversationManager:
             cwd="/Users/xionghaoqiang/Xagent"
         )
 
+        # 加载自定义命令
+        self._load_custom_commands()
+
     async def initialize(self):
         """初始化客户端"""
         if self.client is None:
@@ -92,6 +103,36 @@ class ConversationManager:
                 "type": "user_message",
                 "content": message
             })
+
+            # 检查是否是斜杠命令
+            if self._is_slash_command(message):
+                logger.info(f"Detected slash command: {message}")
+                parts = message.split(maxsplit=1)
+                command = parts[0][1:]  # 移除开头的 /
+                args = parts[1] if len(parts) > 1 else ""
+
+                # 自定义命令优先（可以覆盖内置命令）
+                if command in self.custom_commands:
+                    logger.info(f"Expanding custom command: /{command}")
+                    cmd_data = self.custom_commands[command]
+
+                    # 替换参数占位符
+                    content = cmd_data["content"]
+                    if args:
+                        arg_list = args.split()
+                        for i, arg in enumerate(arg_list, 1):
+                            content = content.replace(f"${i}", arg)
+                    content = content.replace("$ARGUMENTS", args)
+
+                    # 发送展开后的内容给 Claude
+                    message = content
+                    logger.info(f"Expanded to: {content[:100]}...")
+
+                # 处理内置命令
+                elif command in ["help", "clear", "compact"]:
+                    logger.info(f"Handling built-in command: /{command}")
+                    await self._handle_builtin_command(command, websocket)
+                    return  # 内置命令处理完成，不发送给 Claude
 
             # 发送查询到 Claude
             await self.client.query(message)
@@ -217,6 +258,151 @@ class ConversationManager:
             await self.client.disconnect()
             self.client = None
             logger.info("Claude client closed")
+
+    def _load_custom_commands(self):
+        """从 .claude/commands/ 目录加载自定义命令"""
+        commands_dir = Path(self.options.cwd) / ".claude" / "commands"
+
+        if not commands_dir.exists():
+            logger.info("No custom commands directory found")
+            return
+
+        # 递归查找所有 .md 文件
+        for md_file in commands_dir.rglob("*.md"):
+            try:
+                # 命令名称是文件名（不含 .md）
+                command_name = md_file.stem
+
+                # 读取文件内容
+                content = md_file.read_text(encoding="utf-8")
+
+                # 解析 YAML 前言（如果有）
+                metadata = {}
+                command_content = content
+
+                if content.startswith("---"):
+                    parts = content.split("---", 2)
+                    if len(parts) >= 3:
+                        try:
+                            metadata = yaml.safe_load(parts[1]) or {}
+                            command_content = parts[2].strip()
+                        except Exception as e:
+                            logger.warning(f"Failed to parse YAML in {md_file}: {e}")
+
+                # 存储命令
+                self.custom_commands[command_name] = {
+                    "name": command_name,
+                    "content": command_content,
+                    "metadata": metadata,
+                    "file_path": str(md_file)
+                }
+
+                logger.info(f"Loaded custom command: /{command_name}")
+
+            except Exception as e:
+                logger.error(f"Failed to load command from {md_file}: {e}")
+
+    def _is_slash_command(self, message: str) -> bool:
+        """检测消息是否是斜杠命令"""
+        return message.strip().startswith("/")
+
+    async def _handle_builtin_command(self, command: str, websocket: WebSocket):
+        """处理内置斜杠命令"""
+        if command == "help":
+            await self._handle_help_command(websocket)
+        elif command == "clear":
+            await self._handle_clear_command(websocket)
+        elif command == "compact":
+            await self._handle_compact_command(websocket)
+
+    async def _handle_help_command(self, websocket: WebSocket):
+        """处理 /help 命令"""
+        logger.info("Handling /help command")
+
+        # 构建帮助文本
+        help_text = "## 可用的斜杠命令\n\n"
+        help_text += "### 内置命令\n\n"
+        help_text += "**`/help`**\n  显示所有可用的斜杠命令\n\n"
+        help_text += "**`/clear`**\n  清除当前对话历史\n\n"
+        help_text += "**`/compact`**\n  压缩对话历史以减少 token 使用（即将推出）\n\n"
+
+        # 添加自定义命令
+        if self.custom_commands:
+            help_text += "### 自定义命令\n\n"
+            for cmd_name, cmd_data in self.custom_commands.items():
+                desc = cmd_data["metadata"].get("description", "自定义命令")
+                arg_hint = cmd_data["metadata"].get("argument-hint", "")
+                help_text += f"**`/{cmd_name}`** {arg_hint}\n  {desc}\n\n"
+
+        help_text += "---\n\n"
+        help_text += "💡 **提示**: 斜杠命令以 `/` 开头，可以用来控制会话或执行特定操作。"
+
+        # 发送响应
+        await websocket.send_json({
+            "type": "assistant_text",
+            "content": help_text
+        })
+
+        await websocket.send_json({
+            "type": "result",
+            "subtype": "slash_command",
+            "duration_ms": 0,
+            "num_turns": 1,
+            "session_id": "",
+            "total_cost_usd": 0,
+            "usage": {}
+        })
+        logger.info("/help command completed")
+
+    async def _handle_clear_command(self, websocket: WebSocket):
+        """处理 /clear 命令"""
+        try:
+            logger.info("Handling /clear command")
+            # 关闭并重新初始化客户端
+            await self.close()
+            await self.initialize()
+
+            await websocket.send_json({
+                "type": "assistant_text",
+                "content": "✅ **对话历史已清除**\n\n开始新的会话。之前的对话上下文已被清空。"
+            })
+
+            await websocket.send_json({
+                "type": "result",
+                "subtype": "slash_command",
+                "duration_ms": 0,
+                "num_turns": 1,
+                "session_id": "",
+                "total_cost_usd": 0,
+                "usage": {}
+            })
+            logger.info("/clear command completed")
+
+        except Exception as e:
+            logger.error(f"Failed to clear conversation: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "content": f"❌ 清除对话失败: {str(e)}"
+            })
+
+    async def _handle_compact_command(self, websocket: WebSocket):
+        """处理 /compact 命令"""
+        logger.info("Handling /compact command")
+        await websocket.send_json({
+            "type": "assistant_text",
+            "content": "ℹ️ **`/compact` 命令**\n\n此命令将在未来版本中实现。\n\n该命令将压缩对话历史以减少 token 使用，同时保留重要的上下文信息。"
+        })
+
+        await websocket.send_json({
+            "type": "result",
+            "subtype": "slash_command",
+            "duration_ms": 0,
+            "num_turns": 1,
+            "session_id": "",
+            "total_cost_usd": 0,
+            "usage": {}
+        })
+        logger.info("/compact command completed")
 
 
 # 全局会话管理器

@@ -10,6 +10,9 @@ uvicorn>=0.40.0
 # WebSocket Support
 websockets>=16.0
 
+# YAML parsing for custom commands
+pyyaml>=6.0
+
 # Additional dependencies (auto-installed with above)
 # - starlette
 # - pydantic

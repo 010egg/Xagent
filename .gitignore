@@ -31,3 +31,5 @@ Thumbs.db
 
 # Claude Code
 .claude/
+# 但是允许提交自定义命令
+!.claude/commands/

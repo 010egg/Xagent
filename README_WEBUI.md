@@ -12,6 +12,9 @@
 - 💭 思考过程显示
 - 📊 会话统计信息（成本、耗时、轮数）
 - 🔌 WebSocket 实时通信
+- ⚡ 斜杠命令系统（内置 + 自定义命令）
+- 🔧 MCP 服务器集成
+- ⏸️ 请求中断功能
 
 ## 项目结构
 
@@ -22,7 +25,12 @@ Xagent/
 │   ├── index.html           # 主页面
 │   ├── styles.css           # Manus 风格样式
 │   └── app.js              # 前端交互逻辑
+├── .claude/
+│   └── commands/            # 自定义斜杠命令
+│       ├── about.md         # 关于项目命令
+│       └── table-info.md    # 表信息查询命令
 ├── claude_client_demo.py    # ClaudeSDKClient 命令行 demo
+├── SLASH_COMMANDS.md        # 斜杠命令使用指南
 └── venv/                    # Python 虚拟环境
 ```
 
@@ -33,6 +41,7 @@ Xagent/
 - `fastapi` - Web 框架
 - `uvicorn` - ASGI 服务器
 - `websockets` - WebSocket 支持
+- `pyyaml` - YAML 解析（用于自定义命令）
 
 ## 运行 WebUI
 
@@ -54,6 +63,19 @@ http://localhost:8000
 ### 3. 开始对话
 
 在输入框中输入消息，按 Enter 或点击发送按钮即可开始与 Claude 对话。
+
+### 4. 使用斜杠命令
+
+输入以 `/` 开头的命令来执行特殊操作：
+
+```
+/help                    # 显示所有可用命令
+/clear                   # 清除对话历史
+/about                   # 关于项目
+/table-info [表名]       # 查询表信息
+```
+
+详细命令文档请参阅 [SLASH_COMMANDS.md](SLASH_COMMANDS.md)
 
 ## UI 功能说明
 
