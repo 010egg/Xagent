@@ -188,7 +188,7 @@ function addToolUse(toolName, toolInput) {
     }
 
     const toolDiv = document.createElement('div');
-    toolDiv.className = 'tool-use';
+    toolDiv.className = 'tool-use loading';
 
     const inputStr = typeof toolInput === 'object'
         ? JSON.stringify(toolInput, null, 2)
