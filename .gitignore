@@ -28,6 +28,11 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Test files and temp data
+tests/*.txt
+tests/*.html
 
 # Claude Code
 .claude/

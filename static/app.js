@@ -1,4 +1,4 @@
-// Claude WebUI - JavaScript
+// XAgent - JavaScript
 
 let ws = null;
 let isConnected = false;
@@ -12,6 +12,10 @@ let isInterrupting = false;
 let availableCommands = [];  // 从服务器动态加载
 let commandDescriptions = {};  // 命令描述映射
 let commandSuggestions = null;
+
+// 工具调用追踪
+let toolCounter = 0;  // 工具计数器
+let pendingTools = [];  // 待完成的工具ID队列
 
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
@@ -162,9 +166,10 @@ function addOrUpdateAssistantMessage(content) {
         currentAssistantMessage.className = 'message assistant';
         currentAssistantMessage.innerHTML = `
             <div class="message-header">
-                <div class="message-avatar assistant-avatar">C</div>
-                <div class="message-role">Claude</div>
+                <div class="message-avatar assistant-avatar">X</div>
+                <div class="message-role">XAgent</div>
             </div>
+            <div class="tools-container"></div>
             <div class="message-content"></div>
         `;
         messagesContainer.appendChild(currentAssistantMessage);
@@ -200,8 +205,13 @@ function addToolUse(toolName, toolInput) {
         addOrUpdateAssistantMessage('');
     }
 
+    // 生成唯一工具ID
+    const toolId = `tool-${++toolCounter}`;
+    pendingTools.push(toolId);
+
     const toolDiv = document.createElement('div');
     toolDiv.className = 'tool-use loading';
+    toolDiv.setAttribute('data-tool-id', toolId);
 
     const inputStr = typeof toolInput === 'object'
         ? JSON.stringify(toolInput, null, 2)
@@ -231,12 +241,32 @@ function addToolUse(toolName, toolInput) {
         <div class="tool-header">
             <span class="tool-icon">${icon}</span>
             <span class="tool-title">${friendlyName}</span>
-            <span class="tool-status">执行中...</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+                <span class="tool-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">执行中</span>
+                </span>
+                <span class="tool-expand-icon">▼</span>
+            </div>
         </div>
         <div class="tool-input">${escapeHtml(inputStr)}</div>
     `;
 
-    currentAssistantMessage.appendChild(toolDiv);
+    // 添加点击事件切换展开/折叠
+    toolDiv.addEventListener('click', function(e) {
+        // 防止事件冒泡
+        e.stopPropagation();
+        this.classList.toggle('expanded');
+    });
+
+    // 将工具块添加到工具容器中（在消息内容上方）
+    const toolsContainer = currentAssistantMessage.querySelector('.tools-container');
+    if (toolsContainer) {
+        toolsContainer.appendChild(toolDiv);
+    } else {
+        // 兼容旧结构
+        currentAssistantMessage.appendChild(toolDiv);
+    }
 }
 
 // 添加结果信息
@@ -244,6 +274,12 @@ function addResultInfo(data) {
     const messagesContainer = document.getElementById('messages');
 
     if (currentAssistantMessage) {
+        // 确保所有工具都标记为完成状态
+        markAllToolsAsCompleted();
+
+        // 移除任何剩余的处理指示器
+        removeProcessingIndicator();
+
         const resultDiv = document.createElement('div');
         resultDiv.className = 'result-info';
         resultDiv.innerHTML = `
@@ -318,15 +354,24 @@ function sendMessage() {
 
     if (!message) return;
 
+    // 隐藏命令建议
+    hideCommandSuggestions();
+
     // 发送消息
     ws.send(JSON.stringify({
         type: 'message',
         content: message
     }));
 
-    // 清空输入
+    // 立即清空输入框
     input.value = '';
     input.style.height = 'auto';
+
+    // 移除焦点并重新聚焦，确保清空生效
+    input.blur();
+    setTimeout(() => {
+        input.focus();
+    }, 0);
 
     isProcessing = true;
     updateUIState();
@@ -361,8 +406,8 @@ function newChat() {
     messagesContainer.innerHTML = `
         <div class="welcome-message">
             <div class="welcome-icon">👋</div>
-            <h3>Welcome to Claude WebUI</h3>
-            <p>Start a conversation with Claude using the input below.</p>
+            <h3>Welcome to XAgent</h3>
+            <p>Start a conversation with XAgent using the input below.</p>
         </div>
     `;
 
@@ -370,6 +415,8 @@ function newChat() {
     isInterrupting = false;
     turnCount = 0;
     totalCost = 0;
+    toolCounter = 0;
+    pendingTools = [];
 
     document.getElementById('turn-count').textContent = '0';
     document.getElementById('cost-display').textContent = '$0.00';
@@ -422,7 +469,8 @@ function updateUIState() {
 
 // 处理按键
 function handleKeyPress(event) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // Shift+Enter 发送，Enter 换行
+    if (event.key === 'Enter' && event.shiftKey) {
         event.preventDefault();
         sendMessage();
     }
@@ -450,13 +498,255 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// 简单的 Markdown 格式化
+// 渲染表格
+function renderTable(rows) {
+    if (rows.length === 0) return '';
+
+    // 解析表格行为单元格
+    const parsedRows = rows.map(row => {
+        // 移除首尾的 |，然后按 | 分割
+        return row.slice(1, -1).split('|').map(cell => cell.trim());
+    });
+
+    // 查找分隔符行（包含 --- 的行）
+    let separatorIndex = -1;
+    for (let i = 0; i < parsedRows.length; i++) {
+        if (parsedRows[i].every(cell => /^[\s\-:]+$/.test(cell))) {
+            separatorIndex = i;
+            break;
+        }
+    }
+
+    let html = '<table>';
+
+    if (separatorIndex > 0) {
+        // 有标准的表头和分隔符
+        html += '<thead>';
+        for (let i = 0; i < separatorIndex; i++) {
+            html += '<tr>';
+            parsedRows[i].forEach(cell => {
+                html += `<th>${cell}</th>`;
+            });
+            html += '</tr>';
+        }
+        html += '</thead>';
+
+        // 表体（分隔符后的行）
+        if (separatorIndex + 1 < parsedRows.length) {
+            html += '<tbody>';
+            for (let i = separatorIndex + 1; i < parsedRows.length; i++) {
+                html += '<tr>';
+                parsedRows[i].forEach(cell => {
+                    html += `<td>${cell}</td>`;
+                });
+                html += '</tr>';
+            }
+            html += '</tbody>';
+        }
+    } else {
+        // 没有分隔符，第一行作为表头，其余作为表体
+        html += '<thead><tr>';
+        parsedRows[0].forEach(cell => {
+            html += `<th>${cell}</th>`;
+        });
+        html += '</tr></thead>';
+
+        if (parsedRows.length > 1) {
+            html += '<tbody>';
+            for (let i = 1; i < parsedRows.length; i++) {
+                html += '<tr>';
+                parsedRows[i].forEach(cell => {
+                    html += `<td>${cell}</td>`;
+                });
+                html += '</tr>';
+            }
+            html += '</tbody>';
+        }
+    }
+
+    html += '</table>';
+    return html;
+}
+
+// 增强的 Markdown 格式化
 function formatMarkdown(text) {
-    return escapeHtml(text)
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>')
-        .replace(/`(.*?)`/g, '<code>$1</code>')
-        .replace(/\n/g, '<br>');
+    if (!text) return '';
+
+    // 先转义 HTML
+    let html = escapeHtml(text);
+
+    // 处理代码块 ``` - 支持多种格式
+    html = html.replace(/```(\w+)?\s*([\s\S]*?)```/g, (match, lang, code) => {
+        const language = lang ? ` class="language-${lang}"` : '';
+        return `<pre><code${language}>${code.trim()}</code></pre>`;
+    });
+
+    // 处理行内代码 `code`
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // 分割成行处理
+    const lines = html.split('\n');
+    const result = [];
+    let inList = false;
+    let inOrderedList = false;
+    let inBlockquote = false;
+    let inTable = false;
+    let tableRows = [];
+
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i];
+
+        // 跳过代码块内的行
+        if (line.includes('<pre>') || line.includes('</pre>') || line.includes('<code')) {
+            result.push(line);
+            continue;
+        }
+
+        // 检测表格行
+        const isTableRow = /^\|(.+)\|$/.test(line.trim());
+        const isSeparatorRow = /^\|[\s\-:]+\|$/.test(line.trim());
+
+        if (isTableRow) {
+            // 如果是表格行，收集起来
+            if (!inTable) {
+                // 关闭其他块
+                if (inList) {
+                    result.push('</ul>');
+                    inList = false;
+                }
+                if (inOrderedList) {
+                    result.push('</ol>');
+                    inOrderedList = false;
+                }
+                if (inBlockquote) {
+                    result.push('</p></blockquote>');
+                    inBlockquote = false;
+                }
+                inTable = true;
+                tableRows = [];
+            }
+            tableRows.push(line.trim());
+            continue;
+        } else if (inTable) {
+            // 表格结束，渲染表格
+            result.push(renderTable(tableRows));
+            inTable = false;
+            tableRows = [];
+        }
+
+        // 标题 # ## ### #### ##### ######
+        // 修改正则以支持行首空格和 emoji
+        const headingMatch = line.match(/^\s*(#{1,6})\s+(.+)$/);
+        if (headingMatch) {
+            // 标题前关闭所有列表
+            if (inList) {
+                result.push('</ul>');
+                inList = false;
+            }
+            if (inOrderedList) {
+                result.push('</ol>');
+                inOrderedList = false;
+            }
+            if (inBlockquote) {
+                result.push('</p></blockquote>');
+                inBlockquote = false;
+            }
+
+            const level = headingMatch[1].length;
+            const content = headingMatch[2].trim();
+            line = `<h${level}>${content}</h${level}>`;
+        }
+        // 无序列表 - 或 *
+        else if (/^\s*[\-\*]\s+(.+)$/.test(line)) {
+            const match = line.match(/^\s*[\-\*]\s+(.+)$/);
+            const content = match[1];
+            if (!inList) {
+                line = `<ul><li>${content}</li>`;
+                inList = true;
+            } else {
+                line = `<li>${content}</li>`;
+            }
+        }
+        // 有序列表 1. 2. 3.
+        else if (/^\s*\d+\.\s+(.+)$/.test(line)) {
+            const match = line.match(/^\s*\d+\.\s+(.+)$/);
+            const content = match[1];
+            if (!inOrderedList) {
+                line = `<ol><li>${content}</li>`;
+                inOrderedList = true;
+            } else {
+                line = `<li>${content}</li>`;
+            }
+        }
+        // 引用 >
+        else if (/^\s*&gt;\s*(.*)$/.test(line)) {
+            const match = line.match(/^\s*&gt;\s*(.*)$/);
+            const content = match[1];
+            if (!inBlockquote) {
+                line = `<blockquote><p>${content}`;
+                inBlockquote = true;
+            } else {
+                line = `${content}`;
+            }
+        }
+        // 分隔线 --- 或 ***
+        else if (/^(---|\*\*\*)$/.test(line.trim())) {
+            line = '<hr>';
+        }
+        // 空行 - 关闭列表和引用
+        else if (line.trim() === '') {
+            if (inList) {
+                line = '</ul>';
+                inList = false;
+            } else if (inOrderedList) {
+                line = '</ol>';
+                inOrderedList = false;
+            } else if (inBlockquote) {
+                line = '</p></blockquote>';
+                inBlockquote = false;
+            } else {
+                line = '<br>';
+            }
+        }
+        // 普通段落
+        else {
+            if (inBlockquote) {
+                line = `<br>${line}`;
+            } else if (!inList && !inOrderedList) {
+                // 非空行包装成段落，确保块级布局
+                if (line.trim()) {
+                    line = `<p>${line}</p>`;
+                }
+            }
+        }
+
+        result.push(line);
+    }
+
+    // 关闭未闭合的标签
+    if (inList) result.push('</ul>');
+    if (inOrderedList) result.push('</ol>');
+    if (inBlockquote) result.push('</p></blockquote>');
+    if (inTable && tableRows.length > 0) {
+        result.push(renderTable(tableRows));
+    }
+
+    html = result.join('\n');
+
+    // 处理粗体 **text** （只使用星号，避免与下划线冲突）
+    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+    // 处理斜体 *text* （只使用星号，避免与变量名/文件名冲突）
+    // 注意：不匹配已经在标签内的内容
+    html = html.replace(/\*([^\*]+?)\*/g, '<em>$1</em>');
+
+    // 处理链接 [text](url)
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+    // 处理图片 ![alt](url)
+    html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width: 100%; border-radius: 6px;">');
+
+    return html;
 }
 
 // 设置全局键盘快捷键
@@ -482,7 +772,7 @@ function addInterruptMessage() {
             <div class="message-role">System</div>
         </div>
         <div class="message-content" style="border-color: var(--error-color); background: rgba(239, 68, 68, 0.1);">
-            ⏸️ Interrupt signal sent. Waiting for Claude to stop...
+            ⏸️ Interrupt signal sent. Waiting for XAgent to stop...
         </div>
     `;
 
@@ -503,7 +793,7 @@ function addInterruptedMessage() {
         </div>
         <div class="message-content" style="border-color: var(--error-color); background: rgba(239, 68, 68, 0.1);">
             ⏹️ <strong>Request interrupted</strong><br>
-            Claude has stopped processing. You can now send a new message.
+            XAgent has stopped processing. You can now send a new message.
         </div>
     `;
 
@@ -551,10 +841,10 @@ function handleSlashInput(event) {
 // 处理斜杠命令按键
 function handleSlashKeydown(event) {
     if (!commandSuggestions || commandSuggestions.style.display === 'none') return;
-    
+
     const suggestions = commandSuggestions.querySelectorAll('.command-suggestion');
     const selected = commandSuggestions.querySelector('.command-suggestion.selected');
-    
+
     switch (event.key) {
         case 'ArrowDown':
             event.preventDefault();
@@ -565,10 +855,20 @@ function handleSlashKeydown(event) {
             selectPrevSuggestion(suggestions, selected);
             break;
         case 'Tab':
-        case 'Enter':
+            // Tab 键自动完成命令
             if (selected) {
                 event.preventDefault();
                 applySuggestion(selected, event.target);
+            }
+            break;
+        case 'Enter':
+            // Enter 键：如果没有 Shift，自动完成命令；如果有 Shift，关闭建议框让发送逻辑处理
+            if (!event.shiftKey && selected) {
+                event.preventDefault();
+                applySuggestion(selected, event.target);
+            } else {
+                // Shift+Enter，隐藏建议框，让 handleKeyPress 处理发送
+                hideCommandSuggestions();
             }
             break;
         case 'Escape':
@@ -729,8 +1029,14 @@ function addProcessingIndicator(toolName) {
         <div class="spinner"></div>
         <span>${message}</span>
     `;
-    
-    currentAssistantMessage.appendChild(indicator);
+
+    // 将处理指示器添加到工具容器中
+    const toolsContainer = currentAssistantMessage.querySelector('.tools-container');
+    if (toolsContainer) {
+        toolsContainer.appendChild(indicator);
+    } else {
+        currentAssistantMessage.appendChild(indicator);
+    }
     scrollToBottom();
 }
 
@@ -746,19 +1052,44 @@ function removeProcessingIndicator() {
 
 // 标记工具为已完成
 function markToolAsCompleted() {
-    if (!currentAssistantMessage) return;
-    
-    const toolUses = currentAssistantMessage.querySelectorAll('.tool-use');
-    const lastTool = toolUses[toolUses.length - 1];
-    
-    if (lastTool) {
-        const statusElement = lastTool.querySelector('.tool-status');
-        if (statusElement) {
-            statusElement.textContent = '✅ 完成';
-            statusElement.style.color = 'var(--success-color)';
+    if (!currentAssistantMessage || pendingTools.length === 0) return;
+
+    // 获取队列中第一个待完成的工具ID
+    const toolId = pendingTools.shift();
+    const toolElement = currentAssistantMessage.querySelector(`[data-tool-id="${toolId}"]`);
+
+    if (toolElement) {
+        const statusElement = toolElement.querySelector('.tool-status');
+        const statusText = toolElement.querySelector('.status-text');
+        const statusDot = toolElement.querySelector('.status-dot');
+
+        if (statusText) {
+            statusText.textContent = '已完成';
         }
-        
+
         // 移除加载动画
-        lastTool.classList.remove('loading');
+        toolElement.classList.remove('loading');
+        toolElement.classList.add('completed');
     }
+}
+
+// 标记所有工具为已完成
+function markAllToolsAsCompleted() {
+    if (!currentAssistantMessage) return;
+
+    const toolUses = currentAssistantMessage.querySelectorAll('.tool-use.loading');
+
+    toolUses.forEach(tool => {
+        const statusText = tool.querySelector('.status-text');
+        if (statusText) {
+            statusText.textContent = '已完成';
+        }
+
+        // 移除加载动画并标记为完成
+        tool.classList.remove('loading');
+        tool.classList.add('completed');
+    });
+
+    // 清空待完成队列
+    pendingTools = [];
 }

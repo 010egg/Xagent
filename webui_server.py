@@ -1,5 +1,5 @@
 """
-Claude WebUI Server - Manus Style
+XAgent Server
 FastAPI + WebSocket 实现的实时聊天服务器
 """
 
@@ -35,17 +35,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 创建 FastAPI 应用
-app = FastAPI(title="Claude WebUI", version="1.0.0")
+app = FastAPI(title="XAgent", version="1.0.0")
 
 
 class ConversationManager:
-    """管理 Claude 对话会话"""
+    """管理 XAgent 对话会话"""
 
     def __init__(self):
         self.client = None
         self.is_interrupted = False
         self.current_task = None
         self.custom_commands: Dict[str, Dict] = {}
+        self.last_activity_time = None  # 记录最后活动时间
 
         # 配置 MCP 服务器
         mcp_servers = {
@@ -87,7 +88,7 @@ class ConversationManager:
         if self.client is None:
             self.client = ClaudeSDKClient(options=self.options)
             await self.client.connect()
-            logger.info("Claude client initialized")
+            logger.info("XAgent client initialized")
 
     async def send_message(self, message: str, websocket: WebSocket):
         """发送消息并流式返回响应"""
@@ -124,7 +125,7 @@ class ConversationManager:
                             content = content.replace(f"${i}", arg)
                     content = content.replace("$ARGUMENTS", args)
 
-                    # 发送展开后的内容给 Claude
+                    # 发送展开后的内容给 XAgent
                     message = content
                     logger.info(f"Expanded to: {content[:100]}...")
 
@@ -132,9 +133,9 @@ class ConversationManager:
                 elif command in ["help", "clear", "compact"]:
                     logger.info(f"Handling built-in command: /{command}")
                     await self._handle_builtin_command(command, websocket)
-                    return  # 内置命令处理完成，不发送给 Claude
+                    return  # 内置命令处理完成，不发送给 XAgent
 
-            # 发送查询到 Claude
+            # 发送查询到 XAgent
             await self.client.query(message)
 
             # 流式接收响应
@@ -216,6 +217,13 @@ class ConversationManager:
             if self.current_task and not self.current_task.done():
                 logger.info("Cancelling current task")
                 self.current_task.cancel()
+                try:
+                    # 等待任务取消完成（带超时）
+                    await asyncio.wait_for(self.current_task, timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    logger.info("Task cancelled or timed out")
+                except Exception as e:
+                    logger.warning(f"Error waiting for task cancellation: {e}")
 
             # 立即发送中断确认消息给前端
             await websocket.send_json({
@@ -224,24 +232,8 @@ class ConversationManager:
             })
             logger.info("Interrupt response sent to frontend")
 
-            # 在后台调用 SDK 的中断方法并重新初始化客户端
-            if self.client:
-                try:
-                    logger.info("Calling client.interrupt() and reinitializing")
-                    await self.client.interrupt()
-                    logger.info("Disconnecting and reinitializing client")
-                    await self.client.disconnect()
-                    self.client = None
-                    await self.initialize()
-                    logger.info("Client reinitialized successfully")
-                except Exception as e:
-                    logger.warning(f"Error during interrupt cleanup, forcing reinitialization: {e}")
-                    try:
-                        self.client = None
-                        await self.initialize()
-                        logger.info("Forced reinitialization succeeded")
-                    except Exception as e2:
-                        logger.error(f"Forced reinitialization failed: {e2}")
+            # 在后台异步清理客户端（不阻塞响应）
+            asyncio.create_task(self._cleanup_client_after_interrupt())
 
         except Exception as e:
             logger.error(f"Error in interrupt: {e}")
@@ -252,12 +244,53 @@ class ConversationManager:
                 "content": "Request interrupted"
             })
 
+    async def _cleanup_client_after_interrupt(self):
+        """在后台清理和重新初始化客户端"""
+        try:
+            if self.client:
+                logger.info("Starting background client cleanup")
+                try:
+                    # 带超时的中断调用
+                    await asyncio.wait_for(self.client.interrupt(), timeout=3.0)
+                    logger.info("Client interrupt completed")
+                except asyncio.TimeoutError:
+                    logger.warning("Client interrupt timed out, forcing disconnect")
+                except Exception as e:
+                    logger.warning(f"Error during client.interrupt(): {e}")
+
+                try:
+                    # 带超时的断开连接
+                    await asyncio.wait_for(self.client.disconnect(), timeout=3.0)
+                    logger.info("Client disconnected")
+                except asyncio.TimeoutError:
+                    logger.warning("Client disconnect timed out")
+                except Exception as e:
+                    logger.warning(f"Error during client.disconnect(): {e}")
+
+                # 强制重置客户端
+                self.client = None
+
+                # 重新初始化（带超时）
+                try:
+                    await asyncio.wait_for(self.initialize(), timeout=5.0)
+                    logger.info("Client reinitialized successfully")
+                except asyncio.TimeoutError:
+                    logger.error("Client reinitialization timed out")
+                    self.client = None
+                except Exception as e:
+                    logger.error(f"Error during reinitialization: {e}")
+                    self.client = None
+
+        except Exception as e:
+            logger.error(f"Error in background cleanup: {e}")
+            self.client = None
+
     async def close(self):
         """关闭客户端"""
         if self.client:
             await self.client.disconnect()
             self.client = None
-            logger.info("Claude client closed")
+            logger.info("XAgent client closed")
 
     def _load_custom_commands(self):
         """从 .claude/commands/ 目录加载自定义命令"""
@@ -405,8 +438,8 @@ class ConversationManager:
         logger.info("/compact command completed")
 
 
-# 全局会话管理器
-conversation_manager = ConversationManager()
+# 不再使用全局会话管理器，改为每个连接独立创建
+# conversation_manager = ConversationManager()
 
 
 @app.get("/")
@@ -420,10 +453,10 @@ async def get():
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Claude WebUI</title>
+            <title>XAgent</title>
         </head>
         <body>
-            <h1>Claude WebUI</h1>
+            <h1>XAgent</h1>
             <p>Static files not found. Please create static/index.html</p>
         </body>
         </html>
@@ -432,36 +465,50 @@ async def get():
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket 端点"""
+    """WebSocket 端点 - 每个连接独立会话"""
     await websocket.accept()
     logger.info("WebSocket connection established")
+
+    # 为每个连接创建独立的会话管理器
+    conversation_manager = ConversationManager()
 
     try:
         # 发送欢迎消息
         await websocket.send_json({
             "type": "system",
-            "content": "Connected to Claude WebUI"
+            "content": "Connected to XAgent"
         })
 
         # 发送可用命令列表
         available_commands = []
-        # 内置命令
-        available_commands.extend([
-            {"name": "/help", "description": "显示所有可用的斜杠命令"},
-            {"name": "/clear", "description": "清除当前对话历史"},
-            {"name": "/compact", "description": "压缩对话历史以减少 token 使用"}
-        ])
-        # 自定义命令
+
+        # 先添加自定义命令（优先级更高）
         for cmd_name, cmd_data in conversation_manager.custom_commands.items():
             available_commands.append({
                 "name": f"/{cmd_name}",
                 "description": cmd_data["metadata"].get("description", "自定义命令")
             })
 
+        # 添加内置命令（如果没有同名自定义命令）
+        custom_cmd_names = set(conversation_manager.custom_commands.keys())
+        builtin_commands = [
+            ("help", "显示所有可用的斜杠命令"),
+            ("clear", "清除当前对话历史"),
+            ("compact", "压缩对话历史以减少 token 使用")
+        ]
+        for cmd_name, cmd_desc in builtin_commands:
+            if cmd_name not in custom_cmd_names:
+                available_commands.append({
+                    "name": f"/{cmd_name}",
+                    "description": cmd_desc
+                })
+
+        logger.info(f"Sending {len(available_commands)} commands to frontend")
         await websocket.send_json({
             "type": "commands_list",
             "commands": available_commands
         })
+        logger.info(f"Commands sent: {[cmd['name'] for cmd in available_commands]}")
 
         while True:
             # 接收客户端消息
@@ -512,14 +559,18 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        # 不关闭会话管理器，保持持续对话
-        pass
+        # 清理：关闭该连接的会话管理器
+        logger.info("Cleaning up connection manager")
+        try:
+            await conversation_manager.close()
+        except Exception as e:
+            logger.error(f"Error closing conversation manager: {e}")
 
 
 @app.on_event("startup")
 async def startup_event():
     """应用启动事件"""
-    logger.info("Starting Claude WebUI Server")
+    logger.info("Starting XAgent Server")
     # 创建 static 目录
     static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
@@ -528,8 +579,8 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭事件"""
-    logger.info("Shutting down Claude WebUI Server")
-    await conversation_manager.close()
+    logger.info("Shutting down XAgent Server")
+    # 不再需要关闭全局 conversation_manager，因为每个连接都独立管理
 
 
 # 挂载静态文件

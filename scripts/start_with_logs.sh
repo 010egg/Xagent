@@ -5,7 +5,10 @@
 cd /Users/xionghaoqiang/Xagent
 source venv/bin/activate
 
-LOG_FILE="webui_server.log"
+LOG_FILE="logs/webui_server.log"
+
+# 确保 logs 目录存在
+mkdir -p logs
 
 echo "======================================================"
 echo "      Claude WebUI - 启动中（日志模式）"
