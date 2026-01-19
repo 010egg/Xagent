@@ -76,7 +76,7 @@ class ConversationManager:
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             permission_mode="acceptEdits",
-            cwd="/Users/xionghaoqiang/BBA/Xagent"
+            cwd="/Users/xionghaoqiang/Xagent"
         )
 
         # 加载自定义命令
