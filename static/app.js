@@ -8,11 +8,16 @@ let totalCost = 0;
 let isProcessing = false;
 let isInterrupting = false;
 
+// 斜杠命令相关
+let availableCommands = ['/dqc', '/clear', '/compact', '/help'];
+let commandSuggestions = null;
+
 // 初始化
 document.addEventListener('DOMContentLoaded', () => {
     connectWebSocket();
     autoResizeTextarea();
     setupGlobalKeyboardShortcuts();
+    setupSlashCommands();
 });
 
 // 连接 WebSocket
@@ -76,11 +81,14 @@ function handleMessage(data) {
 
         case 'tool_use':
             addToolUse(data.tool_name, data.tool_input);
+            addProcessingIndicator(data.tool_name);
             break;
 
         case 'tool_result':
             // 工具结果可以选择显示或不显示
             console.log('Tool result:', data.content);
+            markToolAsCompleted();
+            removeProcessingIndicator();
             break;
 
         case 'result':
@@ -186,12 +194,31 @@ function addToolUse(toolName, toolInput) {
         ? JSON.stringify(toolInput, null, 2)
         : toolInput;
 
+    // 获取友好的工具名称
+    let friendlyName = toolName;
+    let icon = '⚡';
+    if (toolName.includes('getTableGenerationSql')) {
+        friendlyName = '获取生产SQL代码';
+        icon = '🔍';
+    } else if (toolName.includes('getHiveTableSchema')) {
+        friendlyName = '获取表结构信息';
+        icon = '📊';
+    } else if (toolName.includes('getTableUpstreamLineage')) {
+        friendlyName = '分析上游血缘关系';
+        icon = '🔗';
+    } else if (toolName.includes('getTableDataDemo')) {
+        friendlyName = '获取数据示例';
+        icon = '📋';
+    } else if (toolName.includes('getFieldEnumDistribution')) {
+        friendlyName = '分析字段分布';
+        icon = '📈';
+    }
+
     toolDiv.innerHTML = `
         <div class="tool-header">
-            <svg class="tool-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path>
-            </svg>
-            <span>Using tool: ${escapeHtml(toolName)}</span>
+            <span class="tool-icon">${icon}</span>
+            <span class="tool-title">${friendlyName}</span>
+            <span class="tool-status">执行中...</span>
         </div>
         <div class="tool-input">${escapeHtml(inputStr)}</div>
     `;
@@ -470,4 +497,263 @@ function addInterruptedMessage() {
     messagesContainer.appendChild(interruptedDiv);
     currentAssistantMessage = null;
     scrollToBottom();
+}
+
+// 设置斜杠命令功能
+function setupSlashCommands() {
+    console.log('🚀 Setting up slash commands...');
+    const messageInput = document.getElementById('message-input');
+    
+    if (!messageInput) {
+        console.error('❌ Message input not found!');
+        return;
+    }
+    
+    // 输入事件监听
+    messageInput.addEventListener('input', handleSlashInput);
+    messageInput.addEventListener('keydown', handleSlashKeydown);
+    
+    // 创建命令建议容器
+    createCommandSuggestions();
+    console.log('✅ Slash commands setup complete!');
+}
+
+// 处理斜杠命令输入
+function handleSlashInput(event) {
+    const input = event.target;
+    const text = input.value;
+    
+    console.log('📝 Input changed:', text);
+    
+    // 检查是否在输入斜杠命令
+    if (text.startsWith('/')) {
+        console.log('🔍 Slash command detected:', text);
+        const command = text.split(' ')[0];
+        showCommandSuggestions(command, input);
+    } else {
+        hideCommandSuggestions();
+    }
+}
+
+// 处理斜杠命令按键
+function handleSlashKeydown(event) {
+    if (!commandSuggestions || commandSuggestions.style.display === 'none') return;
+    
+    const suggestions = commandSuggestions.querySelectorAll('.command-suggestion');
+    const selected = commandSuggestions.querySelector('.command-suggestion.selected');
+    
+    switch (event.key) {
+        case 'ArrowDown':
+            event.preventDefault();
+            selectNextSuggestion(suggestions, selected);
+            break;
+        case 'ArrowUp':
+            event.preventDefault();
+            selectPrevSuggestion(suggestions, selected);
+            break;
+        case 'Tab':
+        case 'Enter':
+            if (selected) {
+                event.preventDefault();
+                applySuggestion(selected, event.target);
+            }
+            break;
+        case 'Escape':
+            hideCommandSuggestions();
+            break;
+    }
+}
+
+// 创建命令建议容器
+function createCommandSuggestions() {
+    // 移除已存在的建议容器
+    const existing = document.querySelector('.command-suggestions');
+    if (existing) {
+        existing.remove();
+    }
+    
+    commandSuggestions = document.createElement('div');
+    commandSuggestions.className = 'command-suggestions';
+    commandSuggestions.style.display = 'none';
+    
+    const inputContainer = document.querySelector('.input-container');
+    if (inputContainer) {
+        inputContainer.appendChild(commandSuggestions);
+        console.log('📦 Command suggestions container created');
+    } else {
+        console.error('❌ Input container not found!');
+    }
+}
+
+// 显示命令建议
+function showCommandSuggestions(partial, inputElement) {
+    console.log('🔍 Showing suggestions for:', partial);
+    
+    const matches = availableCommands.filter(cmd => 
+        cmd.toLowerCase().startsWith(partial.toLowerCase())
+    );
+    
+    console.log('📋 Found matches:', matches);
+    
+    if (matches.length === 0) {
+        hideCommandSuggestions();
+        return;
+    }
+    
+    if (!commandSuggestions) {
+        console.error('❌ Command suggestions container not found!');
+        return;
+    }
+    
+    commandSuggestions.innerHTML = '';
+    
+    matches.forEach((cmd, index) => {
+        const suggestion = document.createElement('div');
+        suggestion.className = 'command-suggestion';
+        if (index === 0) suggestion.classList.add('selected');
+        
+        // 为命令添加说明
+        let description = '';
+        if (cmd === '/dqc') {
+            description = '<span class="cmd-desc">DQC代码生成器 - 基于生产SQL生成数据质量检查代码</span>';
+        } else if (cmd === '/clear') {
+            description = '<span class="cmd-desc">清除对话历史</span>';
+        } else if (cmd === '/compact') {
+            description = '<span class="cmd-desc">压缩对话历史</span>';
+        } else if (cmd === '/help') {
+            description = '<span class="cmd-desc">显示帮助信息</span>';
+        }
+        
+        suggestion.innerHTML = `
+            <div class="cmd-name">${cmd}</div>
+            ${description}
+        `;
+        
+        suggestion.addEventListener('click', (e) => {
+            console.log('🖱️ Suggestion clicked:', cmd);
+            e.preventDefault();
+            e.stopPropagation();
+            applySuggestion(suggestion, inputElement);
+        });
+        
+        commandSuggestions.appendChild(suggestion);
+    });
+    
+    // 定位建议框
+    positionSuggestions(inputElement);
+    commandSuggestions.style.display = 'block';
+}
+
+// 隐藏命令建议
+function hideCommandSuggestions() {
+    if (commandSuggestions) {
+        commandSuggestions.style.display = 'none';
+    }
+}
+
+// 选择下一个建议
+function selectNextSuggestion(suggestions, current) {
+    const currentIndex = Array.from(suggestions).indexOf(current);
+    const nextIndex = (currentIndex + 1) % suggestions.length;
+    
+    if (current) current.classList.remove('selected');
+    suggestions[nextIndex].classList.add('selected');
+}
+
+// 选择上一个建议
+function selectPrevSuggestion(suggestions, current) {
+    const currentIndex = Array.from(suggestions).indexOf(current);
+    const prevIndex = (currentIndex - 1 + suggestions.length) % suggestions.length;
+    
+    if (current) current.classList.remove('selected');
+    suggestions[prevIndex].classList.add('selected');
+}
+
+// 应用建议
+function applySuggestion(suggestion, inputElement) {
+    const command = suggestion.querySelector('.cmd-name').textContent;
+    
+    // 为 /dqc 命令添加参数提示
+    if (command === '/dqc') {
+        inputElement.value = '/dqc ';
+        inputElement.setSelectionRange(5, 5); // 光标定位到参数位置
+    } else {
+        inputElement.value = command;
+    }
+    
+    hideCommandSuggestions();
+    inputElement.focus();
+}
+
+// 定位建议框
+function positionSuggestions(inputElement) {
+    commandSuggestions.style.position = 'absolute';
+    commandSuggestions.style.bottom = '60px'; // 输入框上方
+    commandSuggestions.style.left = '0';
+    commandSuggestions.style.right = '0';
+}
+
+// 添加处理指示器
+function addProcessingIndicator(toolName) {
+    if (!currentAssistantMessage) return;
+    
+    // 移除已存在的指示器
+    removeProcessingIndicator();
+    
+    // 根据工具名称显示更具体的信息
+    let message = '正在调用工具...';
+    if (toolName) {
+        if (toolName.includes('getTableGenerationSql')) {
+            message = '🔍 正在获取生产SQL代码...';
+        } else if (toolName.includes('getHiveTableSchema')) {
+            message = '📊 正在获取表结构信息...';
+        } else if (toolName.includes('getTableUpstreamLineage')) {
+            message = '🔗 正在分析上游血缘关系...';
+        } else if (toolName.includes('getTableDataDemo')) {
+            message = '📋 正在获取数据示例...';
+        } else if (toolName.includes('getFieldEnumDistribution')) {
+            message = '📈 正在分析字段分布...';
+        } else {
+            message = `⚡ 正在调用 ${toolName}...`;
+        }
+    }
+    
+    const indicator = document.createElement('div');
+    indicator.className = 'processing-indicator';
+    indicator.innerHTML = `
+        <div class="spinner"></div>
+        <span>${message}</span>
+    `;
+    
+    currentAssistantMessage.appendChild(indicator);
+    scrollToBottom();
+}
+
+// 移除处理指示器
+function removeProcessingIndicator() {
+    if (!currentAssistantMessage) return;
+    
+    const indicator = currentAssistantMessage.querySelector('.processing-indicator');
+    if (indicator) {
+        indicator.remove();
+    }
+}
+
+// 标记工具为已完成
+function markToolAsCompleted() {
+    if (!currentAssistantMessage) return;
+    
+    const toolUses = currentAssistantMessage.querySelectorAll('.tool-use');
+    const lastTool = toolUses[toolUses.length - 1];
+    
+    if (lastTool) {
+        const statusElement = lastTool.querySelector('.tool-status');
+        if (statusElement) {
+            statusElement.textContent = '✅ 完成';
+            statusElement.style.color = 'var(--success-color)';
+        }
+        
+        // 移除加载动画
+        lastTool.classList.remove('loading');
+    }
 }

@@ -68,7 +68,7 @@ class ConversationManager:
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
             permission_mode="acceptEdits",
-            cwd="/Users/xionghaoqiang/Xagent"
+            cwd="/Users/xionghaoqiang/BBA/Xagent"
         )
 
     async def initialize(self):
