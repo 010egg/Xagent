@@ -9,7 +9,8 @@ let isProcessing = false;
 let isInterrupting = false;
 
 // 斜杠命令相关
-let availableCommands = ['/dqc', '/clear', '/compact', '/help'];
+let availableCommands = [];  // 从服务器动态加载
+let commandDescriptions = {};  // 命令描述映射
 let commandSuggestions = null;
 
 // 初始化
@@ -65,6 +66,18 @@ function handleMessage(data) {
     switch (data.type) {
         case 'system':
             console.log('System:', data.content || data);
+            break;
+
+        case 'commands_list':
+            // 更新可用命令列表
+            if (data.commands && Array.isArray(data.commands)) {
+                availableCommands = data.commands.map(cmd => cmd.name);
+                commandDescriptions = {};
+                data.commands.forEach(cmd => {
+                    commandDescriptions[cmd.name] = cmd.description;
+                });
+                console.log('✅ 已加载命令列表:', availableCommands);
+            }
             break;
 
         case 'user_message':
@@ -611,22 +624,14 @@ function showCommandSuggestions(partial, inputElement) {
         const suggestion = document.createElement('div');
         suggestion.className = 'command-suggestion';
         if (index === 0) suggestion.classList.add('selected');
-        
-        // 为命令添加说明
-        let description = '';
-        if (cmd === '/dqc') {
-            description = '<span class="cmd-desc">DQC代码生成器 - 基于生产SQL生成数据质量检查代码</span>';
-        } else if (cmd === '/clear') {
-            description = '<span class="cmd-desc">清除对话历史</span>';
-        } else if (cmd === '/compact') {
-            description = '<span class="cmd-desc">压缩对话历史</span>';
-        } else if (cmd === '/help') {
-            description = '<span class="cmd-desc">显示帮助信息</span>';
-        }
-        
+
+        // 从命令描述映射中获取说明
+        const description = commandDescriptions[cmd] || '斜杠命令';
+        const descriptionHtml = description ? `<span class="cmd-desc">${description}</span>` : '';
+
         suggestion.innerHTML = `
             <div class="cmd-name">${cmd}</div>
-            ${description}
+            ${descriptionHtml}
         `;
         
         suggestion.addEventListener('click', (e) => {

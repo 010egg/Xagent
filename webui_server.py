@@ -443,6 +443,26 @@ async def websocket_endpoint(websocket: WebSocket):
             "content": "Connected to Claude WebUI"
         })
 
+        # 发送可用命令列表
+        available_commands = []
+        # 内置命令
+        available_commands.extend([
+            {"name": "/help", "description": "显示所有可用的斜杠命令"},
+            {"name": "/clear", "description": "清除当前对话历史"},
+            {"name": "/compact", "description": "压缩对话历史以减少 token 使用"}
+        ])
+        # 自定义命令
+        for cmd_name, cmd_data in conversation_manager.custom_commands.items():
+            available_commands.append({
+                "name": f"/{cmd_name}",
+                "description": cmd_data["metadata"].get("description", "自定义命令")
+            })
+
+        await websocket.send_json({
+            "type": "commands_list",
+            "commands": available_commands
+        })
+
         while True:
             # 接收客户端消息
             data = await websocket.receive_text()
